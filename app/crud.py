@@ -1,4 +1,8 @@
 from app.database import get_db_connection
+from datetime import date, datetime, timedelta
+
+BORROW_DAYS = 14
+FINE_PER_DAY = 5.0
 
 def create_user(name: str, email: str, password: str, role: str = "user"):
     conn = get_db_connection()
@@ -26,6 +30,17 @@ def get_user_by_email(email: str):
     cursor = conn.cursor()
 
     cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+
+    conn.close()
+    return user
+
+
+def get_user_by_id(user_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
     user = cursor.fetchone()
 
     conn.close()
@@ -138,3 +153,183 @@ def search_books(query: str):
     conn.close()
 
     return [dict(book) for book in books]
+
+
+def borrow_book(user_id: int, book_id: int):
+    today = date.today()
+    due_date = today + timedelta(days=BORROW_DAYS)
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    user = cursor.fetchone()
+    if not user:
+        conn.close()
+        return None, "user_not_found"
+
+    cursor.execute("SELECT * FROM books WHERE id = ?", (book_id,))
+    book = cursor.fetchone()
+    if not book:
+        conn.close()
+        return None, "book_not_found"
+
+    if book["available_copies"] <= 0:
+        conn.close()
+        return None, "no_copies_available"
+
+    cursor.execute("""
+        SELECT id
+        FROM borrow_records
+        WHERE user_id = ? AND book_id = ? AND status = 'borrowed'
+    """, (user_id, book_id))
+    active_record = cursor.fetchone()
+    if active_record:
+        conn.close()
+        return None, "already_borrowed"
+
+    cursor.execute("""
+        INSERT INTO borrow_records (user_id, book_id, borrow_date, due_date, status)
+        VALUES (?, ?, ?, ?, 'borrowed')
+    """, (user_id, book_id, today.isoformat(), due_date.isoformat()))
+    borrow_record_id = cursor.lastrowid
+
+    cursor.execute("""
+        UPDATE books
+        SET available_copies = available_copies - 1
+        WHERE id = ?
+    """, (book_id,))
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "id": borrow_record_id,
+        "user_id": user_id,
+        "book_id": book_id,
+        "borrow_date": today.isoformat(),
+        "due_date": due_date.isoformat(),
+        "status": "borrowed"
+    }, None
+
+
+def calculate_fine_amount(due_date_str: str, return_date_str: str):
+    due_date = datetime.strptime(due_date_str, "%Y-%m-%d").date()
+    return_date = datetime.strptime(return_date_str, "%Y-%m-%d").date()
+
+    overdue_days = (return_date - due_date).days
+    if overdue_days <= 0:
+        return 0.0
+
+    return float(overdue_days * FINE_PER_DAY)
+
+
+def return_book(user_id: int, book_id: int):
+    return_date = date.today().isoformat()
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    user = cursor.fetchone()
+    if not user:
+        conn.close()
+        return None, "user_not_found"
+
+    cursor.execute("SELECT * FROM books WHERE id = ?", (book_id,))
+    book = cursor.fetchone()
+    if not book:
+        conn.close()
+        return None, "book_not_found"
+
+    cursor.execute("""
+        SELECT *
+        FROM borrow_records
+        WHERE user_id = ? AND book_id = ? AND status = 'borrowed'
+        ORDER BY id DESC
+        LIMIT 1
+    """, (user_id, book_id))
+    record = cursor.fetchone()
+
+    if not record:
+        conn.close()
+        return None, "active_borrow_not_found"
+
+    fine_amount = calculate_fine_amount(record["due_date"], return_date)
+
+    cursor.execute("""
+        UPDATE borrow_records
+        SET return_date = ?, status = 'returned'
+        WHERE id = ?
+    """, (return_date, record["id"]))
+
+    cursor.execute("""
+        UPDATE books
+        SET available_copies = available_copies + 1
+        WHERE id = ?
+    """, (book_id,))
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO fines (borrow_record_id, amount, paid)
+        VALUES (?, ?, 0)
+    """, (record["id"], fine_amount))
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "borrow_record_id": record["id"],
+        "book_id": book_id,
+        "user_id": user_id,
+        "return_date": return_date,
+        "status": "returned",
+        "fine_amount": fine_amount
+    }, None
+
+
+def get_borrow_history(user_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT br.id AS borrow_record_id,
+               br.book_id,
+               b.title,
+               br.borrow_date,
+               br.due_date,
+               br.return_date,
+               br.status
+        FROM borrow_records br
+        JOIN books b ON br.book_id = b.id
+        WHERE br.user_id = ?
+        ORDER BY br.id DESC
+    """, (user_id,))
+
+    records = cursor.fetchall()
+    conn.close()
+
+    return [dict(record) for record in records]
+
+
+def get_user_fines(user_id: int):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT f.borrow_record_id,
+               br.user_id,
+               br.book_id,
+               b.title,
+               f.amount,
+               CAST(f.paid AS BOOLEAN) AS paid
+        FROM fines f
+        JOIN borrow_records br ON f.borrow_record_id = br.id
+        JOIN books b ON br.book_id = b.id
+        WHERE br.user_id = ?
+        ORDER BY f.borrow_record_id DESC
+    """, (user_id,))
+
+    fines = cursor.fetchall()
+    conn.close()
+
+    return [dict(fine) for fine in fines]

@@ -52,7 +52,27 @@ class BorrowResponse(BaseModel):
 class ReturnRequest(BaseModel):
     user_id: int
 
+class ReturnResponse(BaseModel):
+    borrow_record_id: int
+    book_id: int
+    user_id: int
+    return_date: str
+    status: str
+    fine_amount: float
+
+class BorrowHistoryItem(BaseModel):
+    borrow_record_id: int
+    book_id: int
+    title: str
+    borrow_date: str
+    due_date: str
+    return_date: Optional[str]
+    status: str
+
 class FineResponse(BaseModel):
     borrow_record_id: int
+    user_id: int
+    book_id: int
+    title: str
     amount: float
     paid: bool
