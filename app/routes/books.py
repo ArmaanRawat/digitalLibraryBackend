@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 from app.schemas import BookCreate
-from app.crud import create_book, get_all_books, search_books
+from app.crud import create_book, get_all_books, search_books, get_overdue_books
 
 router = APIRouter()
 
@@ -34,3 +34,12 @@ def search_for_books(query: str = Query(..., min_length=1)):
         raise HTTPException(status_code=404, detail="No books found")
 
     return {"books": books}
+
+@router.get("/books/overdue")
+def list_overdue_books():
+    overdue_books = get_overdue_books()
+
+    return {
+        "overdue_books": overdue_books,
+        "count": len(overdue_books)
+    }
