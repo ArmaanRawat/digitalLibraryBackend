@@ -333,3 +333,29 @@ def get_user_fines(user_id: int):
     conn.close()
 
     return [dict(fine) for fine in fines]
+
+def get_overdue_books():
+    from datetime import date
+
+    today = date.today().isoformat()
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT br.id AS borrow_record_id,
+               br.user_id,
+               br.book_id,
+               b.title,
+               br.borrow_date,
+               br.due_date
+        FROM borrow_records br
+        JOIN books b ON br.book_id = b.id
+        WHERE br.status = 'borrowed'
+        AND br.due_date < ?
+    """, (today,))
+
+    records = cursor.fetchall()
+    conn.close()
+
+    return [dict(record) for record in records]
